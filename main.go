@@ -16,7 +16,9 @@ func main() {
 	webServer := app.GetWebServer()
 	monitor := app.GetMonitorApp()
 
+	// 迁移模块，可分解到api模块中
 	migratorApp.Start()
+	// 调度模块，可分解到worker模块中
 	schedulerApp.Start()
 	defer schedulerApp.Stop()
 

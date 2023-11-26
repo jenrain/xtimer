@@ -85,6 +85,10 @@ func (t *TimerService) GetTimer(ctx context.Context, id uint) (*vo.Timer, error)
 	return vo.NewTimer(pTimer)
 }
 
+// EnableTimer 激活定时任务
+// 1.获取激活任务的分布式锁，避免其它机器重复执行
+// 2.从数据库中获取新插入的定时任务
+// 3.构造出未来两小时要执行的任务流水记录，存入mysql(同时将任务状态修改为激活态)和redis中
 func (t *TimerService) EnableTimer(ctx context.Context, app string, id uint) error {
 	// 限制激活和去激活频次
 	lock := t.lockService.GetDistributionLock(utils.GetEnableLockKey(app))
@@ -101,14 +105,17 @@ func (t *TimerService) EnableTimer(ctx context.Context, app string, id uint) err
 		// 取得批量的执行时机
 		// end 为下两个切片的右边界
 		start := time.Now()
+		// 假设当前时间是11点，提前开始处理 11 点 0 分-13 点 0 分 这个步长范围内的内容
 		end := utils.GetForwardTwoMigrateStepEnd(start, 2*time.Duration(t.migrateConfProvider.Get().MigrateStepMinutes)*time.Minute)
+		// 1.从cron表达式中解析出任务的执行周期
+		// 2.返回未来两小时内任务要执行的所有时间点数组
 		executeTimes, err := t.cronParser.NextsBefore(timer.Cron, end)
 		if err != nil {
 			log.ErrorContextf(ctx, "get executeTimes failed, err: %v", err)
 			return err
 		}
 
-		// 执行时机加入数据库
+		// 将待执行的任务封装成一批Task，然后插入数据库和Redis
 		tasks := timer.BatchTasksFromTimer(executeTimes)
 		// 基于 timer_id + run_timer 唯一键，保证任务不被重复插入
 		if err := dao.BatchCreateRecords(ctx, tasks); err != nil && !mysql.IsDuplicateEntryErr(err) {
@@ -125,6 +132,7 @@ func (t *TimerService) EnableTimer(ctx context.Context, app string, id uint) err
 		return dao.UpdateTimer(ctx, timer)
 	}
 
+	// 加锁执行以上逻辑(这里的加锁实际上指的是：加 for update 锁读出新插入的这个定时任务，实际上执行do函数，是事务操作)
 	return t.dao.DoWithLock(ctx, id, do)
 }
 

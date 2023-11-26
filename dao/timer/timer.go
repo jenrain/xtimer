@@ -84,6 +84,7 @@ func (t *TimerDAO) DoWithLock(ctx context.Context, id uint, do func(ctx context.
 			}
 		}()
 
+		// 当前读出新增的调度任务
 		var timer po.Timer
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").WithContext(ctx).First(&timer, id).Error; err != nil {
 			return err

@@ -79,11 +79,15 @@ func (t *TaskCache) BatchCreateTasks(ctx context.Context, tasks []*po.Task, star
 	commands := make([]*redis.Command, 0, 2*len(tasks))
 	for _, task := range tasks {
 		unix := task.RunTimer.UnixMilli()
+		// 返回任务对应的分片(zset的名称)：执行时间_桶号
+		// 2006-01-02 15:04_2
 		tableName := t.GetTableName(task)
 		// tableName := t.GetTableName(task, minBuckets)
+		// 将任务插入到对应的zset中
 		commands = append(commands, redis.NewZAddCommand(tableName, unix, utils.UnionTimerIDUnix(task.TimerID, unix)))
 		// zset 一天后过期
 		aliveSeconds := int64(time.Until(task.RunTimer.Add(24*time.Hour)) / time.Second)
+		// 设置这个zset的过期时间为1天
 		commands = append(commands, redis.NewExpireCommand(tableName, aliveSeconds))
 	}
 
@@ -111,6 +115,7 @@ func (t *TaskCache) GetTasksByTime(ctx context.Context, table string, start, end
 
 func (t *TaskCache) GetTableName(task *po.Task) string {
 	// 兜底取值
+	// 默认分20个桶
 	maxBucket := t.confProvider.Get().BucketsNum
 	// for _, minBucket := range minuteBuckets {
 	// 	if minBucket.Minute == task.RunTimer.Format(consts.MinuteFormat) {
@@ -119,6 +124,7 @@ func (t *TaskCache) GetTableName(task *po.Task) string {
 	// 	}
 	// }
 
+	// 2006-01-02 15:04_2
 	return fmt.Sprintf("%s_%d", task.RunTimer.Format(consts.MinuteFormat), int64(task.TimerID)%int64(maxBucket))
 }
 
