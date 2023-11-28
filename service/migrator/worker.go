@@ -40,6 +40,7 @@ func NewWorker(timerDAO *timerdao.TimerDAO, taskDAO *taskdao.TaskDAO, taskCache 
 
 func (w *Worker) Start(ctx context.Context) error {
 	conf := w.appConfigProvider.Get()
+	// 每隔60分钟抢占一次分布式锁，然后进行迁移逻辑
 	ticker := time.NewTicker(time.Duration(conf.MigrateStepMinutes) * time.Minute)
 	defer ticker.Stop()
 
@@ -51,6 +52,9 @@ func (w *Worker) Start(ctx context.Context) error {
 		default:
 		}
 
+		// 获取迁移的分布式锁，避免其它机器重复迁移
+		// 分布式锁的key是当前小时的格式化时间
+		// 分布式锁的过期时间是20分钟
 		locker := w.lockService.GetDistributionLock(utils.GetMigratorLockKey(utils.GetStartHour(time.Now())))
 		if err := locker.Lock(ctx, int64(conf.MigrateTryLockMinutes)*int64(time.Minute/time.Second)); err != nil {
 			log.ErrorContext(ctx, "migrator get lock failed, key: %s, err: %v", utils.GetMigratorLockKey(utils.GetStartHour(time.Now())), err)
@@ -62,12 +66,14 @@ func (w *Worker) Start(ctx context.Context) error {
 			continue
 		}
 
+		// 迁移成功，续约锁的过期时间：2小时
 		_ = locker.ExpireLock(ctx, int64(conf.MigrateSucessExpireMinutes)*int64(time.Minute/time.Second))
 	}
 	return nil
 }
 
 func (w *Worker) migrate(ctx context.Context) error {
+	// 从数据库中取出处于激活状态的定时任务
 	timers, err := w.timerDAO.GetTimers(ctx, timerdao.WithStatus(int32(consts.Enabled.ToInt())))
 	if err != nil {
 		return err
@@ -75,10 +81,13 @@ func (w *Worker) migrate(ctx context.Context) error {
 
 	conf := w.appConfigProvider.Get()
 	now := time.Now()
+	// 生成未来一小时的运行流水记录，比如当前是11:30，要生成12:00~13:00
 	start, end := utils.GetStartHour(now.Add(time.Duration(conf.MigrateStepMinutes)*time.Minute)), utils.GetStartHour(now.Add(2*time.Duration(conf.MigrateStepMinutes)*time.Minute))
-	// 迁移可以慢慢来，不着急
+	// 迁移可以慢慢来，不着急，5秒迁移一次
 	for _, timer := range timers {
+		// 取出定时任务未来一小时时间内的所有执行时间点
 		nexts, _ := w.cronParser.NextsBetween(timer.Cron, start, end)
+		// 将执行时间点包装为流水记录，存入mysql中
 		if err := w.timerDAO.BatchCreateRecords(ctx, timer.BatchTasksFromTimer(nexts)); err != nil {
 			log.ErrorContextf(ctx, "migrator batch create records for timer: %d failed, err: %v", timer.ID, err)
 		}
@@ -91,6 +100,7 @@ func (w *Worker) migrate(ctx context.Context) error {
 	// }
 
 	// log.InfoContext(ctx, "migrator batch create db tasks susccess")
+	// 将刚刚存入mysql的执行流水记录取出，存到redis中
 	return w.migrateToCache(ctx, start, end)
 }
 

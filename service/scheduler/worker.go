@@ -35,6 +35,7 @@ func NewWorker(trigger *trigger.Worker, redisClient *redis.Client, appConfProvid
 func (w *Worker) Start(ctx context.Context) error {
 	w.trigger.Start(ctx)
 
+	// 每隔100毫秒拉取一次待执行的任务
 	ticker := time.NewTicker(time.Duration(w.appConfProvider.Get().TryLockGapMilliSeconds) * time.Millisecond)
 	defer ticker.Stop()
 
@@ -52,6 +53,7 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 func (w *Worker) handleSlices(ctx context.Context) {
+	// 遍历20个桶
 	for i := 0; i < w.getValidBucket(ctx); i++ {
 		w.handleSlice(ctx, i)
 	}
