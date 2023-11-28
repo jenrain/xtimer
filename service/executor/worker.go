@@ -51,9 +51,12 @@ func (w *Worker) Work(ctx context.Context, timerIDUnixKey string) error {
 		return err
 	}
 
+	// 基于bloomFilter进行去重，判断任务之前是否被执行过
 	if exist, err := w.bloomFilter.Exist(ctx, utils.GetTaskBloomFilterKey(utils.GetDayStr(time.UnixMilli(unix))), timerIDUnixKey); err != nil || exist {
 		log.WarnContextf(ctx, "bloom filter check failed, start to check db, bloom key: %s, timerIDUnixKey: %s, err: %v, exist: %t", utils.GetTaskBloomFilterKey(utils.GetDayStr(time.UnixMilli(unix))), timerIDUnixKey, err, exist)
 		// 查库判断定时器状态
+
+		// 如果命中bloomFilter，由于存在假阳性，所以需要去mysql中进行double check
 		task, err := w.taskDAO.GetTask(ctx, taskdao.WithTimerID(timerID), taskdao.WithRunTimer(time.UnixMilli(unix)))
 		if err == nil && task.Status != consts.NotRunned.ToInt() {
 			// 重复执行的任务
@@ -62,6 +65,7 @@ func (w *Worker) Work(ctx context.Context, timerIDUnixKey string) error {
 		}
 	}
 
+	// 执行没有重复的任务
 	return w.executeAndPostProcess(ctx, timerID, unix)
 }
 
@@ -106,7 +110,9 @@ func (w *Worker) execute(ctx context.Context, timer *vo.Timer) (map[string]inter
 }
 
 func (w *Worker) postProcess(ctx context.Context, resp map[string]interface{}, execErr error, app string, timerID uint, unix int64, execTime time.Time) error {
+	// 上报监控
 	go w.reportMonitorData(app, unix, execTime)
+	// 执行过的任务丢进bloomFilter中
 	if err := w.bloomFilter.Set(ctx, utils.GetTaskBloomFilterKey(utils.GetDayStr(time.UnixMilli(unix))), utils.UnionTimerIDUnix(timerID, unix), consts.BloomFilterKeyExpireSeconds); err != nil {
 		log.ErrorContextf(ctx, "set bloom filter failed, key: %s, err: %v", utils.GetTaskBloomFilterKey(utils.GetDayStr(time.UnixMilli(unix))), err)
 	}

@@ -52,6 +52,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
+// 每隔100毫秒遍历20个桶
 func (w *Worker) handleSlices(ctx context.Context) {
 	// 遍历20个桶
 	for i := 0; i < w.getValidBucket(ctx); i++ {
@@ -100,11 +101,13 @@ func (w *Worker) getValidBucket(ctx context.Context) int {
 func (w *Worker) handleSlice(ctx context.Context, bucketID int) {
 	// log.InfoContextf(ctx, "scheduler_1 start: %v", time.Now())
 	now := time.Now()
+	// 执行前一分钟到当前时间的任务，防止某个协程任务执行失败，这里做一次重试
 	if err := w.pool.Submit(func() {
 		w.asyncHandleSlice(ctx, now.Add(-time.Minute), bucketID)
 	}); err != nil {
 		log.ErrorContextf(ctx, "[handle slice] submit task failed, err: %v", err)
 	}
+	// 执行当前时间到未来一分钟的任务
 	if err := w.pool.Submit(func() {
 		w.asyncHandleSlice(ctx, now, bucketID)
 	}); err != nil {
@@ -119,7 +122,9 @@ func (w *Worker) asyncHandleSlice(ctx context.Context, t time.Time, bucketID int
 	// 	log.InfoContextf(ctx, "scheduler_2 end: %v", time.Now())
 	// }()
 
+	// 抢占二维分片的分布式锁，一分钟+一个桶 粒度，分布式锁key的格式：time_bucket_lock_2006-01-02 15:04_bucketID
 	locker := w.lockService.GetDistributionLock(utils.GetTimeBucketLockKey(t, bucketID))
+	// 上锁，锁的过期时间设定为70秒
 	if err := locker.Lock(ctx, int64(w.appConfProvider.Get().TryLockSeconds)); err != nil {
 		// log.WarnContextf(ctx, "get lock failed, err: %v, key: %s", err, utils.GetTimeBucketLockKey(t, bucketID))
 		return
@@ -128,6 +133,7 @@ func (w *Worker) asyncHandleSlice(ctx context.Context, t time.Time, bucketID int
 	log.InfoContextf(ctx, "get scheduler lock success, key: %s", utils.GetTimeBucketLockKey(t, bucketID))
 
 	ack := func() {
+		// 如果任务执行成功，将分布式锁的过期时间更新为130s
 		if err := locker.ExpireLock(ctx, int64(w.appConfProvider.Get().SuccessExpireSeconds)); err != nil {
 			log.ErrorContextf(ctx, "expire lock failed, lock key: %s, err: %v", utils.GetTimeBucketLockKey(t, bucketID), err)
 		}

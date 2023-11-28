@@ -47,6 +47,7 @@ func (w *Worker) Work(ctx context.Context, minuteBucketKey string, ack func()) e
 	// }()
 
 	// 进行为时一分钟的 zrange 处理
+	// 取出当前分钟的时间表达式
 	startTime, err := getStartMinute(minuteBucketKey)
 	if err != nil {
 		return err
@@ -114,11 +115,14 @@ func (w *Worker) Work(ctx context.Context, minuteBucketKey string, ack func()) e
 }
 
 func (w *Worker) handleBatch(ctx context.Context, key string, start, end time.Time) error {
+	// 获取当前的桶号
 	bucket, err := getBucket(key)
 	if err != nil {
 		return err
 	}
 
+	// 从redis或者mysql中取出
+	// 当前秒 && 对应桶号的所有任务
 	tasks, err := w.task.GetTasksByTime(ctx, key, bucket, start, end)
 	if err != nil {
 		return err
@@ -136,6 +140,7 @@ func (w *Worker) handleBatch(ctx context.Context, key string, start, end time.Ti
 			// defer func() {
 			// 	log.InfoContextf(ctx, "trigger_3 end: %v", time.Now())
 			// }()
+			// 将当前秒要执行的任务交给协程池执行
 			if err := w.executor.Work(ctx, utils.UnionTimerIDUnix(task.TimerID, task.RunTimer.UnixMilli())); err != nil {
 				log.ErrorContextf(ctx, "executor work failed, err: %v", err)
 			}
